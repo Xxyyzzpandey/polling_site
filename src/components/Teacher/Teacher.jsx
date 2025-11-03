@@ -3,6 +3,7 @@ import { io } from "socket.io-client";
 import { Slider } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import { useStore } from "../../store/zustand";
+import Navbar from "../Nav/Navbar";
 
 const URL = process.env.NODE_ENV === "production" ? undefined : "http://localhost:3000";
 
@@ -10,21 +11,19 @@ export default function Teacher() {
   const { name, user } = useStore();
   const navigate = useNavigate();
 
-  // Room id derived from teacher name or random fallback
   const roomId = useMemo(() => {
     const cleaned = (name || "").trim();
     return cleaned.length ? `${cleaned}_room` : `room_${Math.random().toString(36).slice(2, 8)}`;
   }, [name]);
-  console.log(roomId);
-  const socket = useMemo(() => io(URL, { autoConnect: true }), []);
+
+  const socket = useMemo(() => io(URL), []);
 
   const [sliderTime, setSliderTime] = useState(20);
-  const [timer, setTimer] = useState(0);
   const [submitDisabled, setSubmitDisabled] = useState(false);
   const intervalRef = useRef(null);
 
   const [newQuestion, setNewQuestion] = useState({
-    questionText: "No Previous Question !",
+    questionText: "No Previous Question!",
     options: [
       { id: 1, optionVotes: 0, optionText: "Option A" },
       { id: 2, optionVotes: 0, optionText: "Option B" },
@@ -33,7 +32,8 @@ export default function Teacher() {
     ],
     correctId: -1,
     totalVotes: 0,
-    timer: 0,
+    remainingTime: 0,
+    status: "ended",
   });
 
   const [formData, setFormData] = useState({
@@ -45,28 +45,40 @@ export default function Teacher() {
       { id: 4, optionVotes: 0, optionText: "Software Engineer" },
     ],
     correctId: -1,
-    totalVotes: 0,
     timer: 0,
   });
 
-  // ------------------ Socket setup ------------------
+  // ---------------- Socket setup ----------------
   useEffect(() => {
     socket.on("connect", () => {
-      console.log("Connected as teacher:", socket.id);
       socket.emit("joinRoom", roomId, "teacher");
     });
 
-    socket.on("failed", (data) => {
-      alert("Socket connection failed: " + data.msg);
-    });
-
+    // Real-time updates from server
     socket.on("updateQuestion", (data) => {
       setNewQuestion(data);
     });
 
+    socket.on("timerUpdate", ({ remainingTime }) => {
+      setNewQuestion((prev) => ({ ...prev, remainingTime }));
+    });
+   
+    socket.on("pollResults", (data) => {
+  setNewQuestion({
+    questionText: data.questionText,
+    options: data.options,
+    totalVotes: data.totalParticipants,
+    correctId: data.correctOption?.id ?? -1,
+    status: "ended"
+  });
+  setTimer(0);
+});
+
+
     socket.on("pollEnded", () => {
       clearCountdown();
       setSubmitDisabled(false);
+      setNewQuestion((prev) => ({ ...prev, status: "ended", remainingTime: 0 }));
     });
 
     return () => {
@@ -75,13 +87,13 @@ export default function Teacher() {
     };
   }, [roomId, socket]);
 
-  // ------------------ Navigation Guard ------------------
+  // ---------------- Navigation Guard ----------------
   useEffect(() => {
     if (user === "student") navigate("/student");
     if (!user) navigate("/");
   }, [user, navigate]);
 
-  // ------------------ Countdown ------------------
+  // ---------------- Countdown ----------------
   const clearCountdown = () => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -89,24 +101,24 @@ export default function Teacher() {
     }
   };
 
-  const startCountdown = (initial) => {
+  const startCountdown = (duration) => {
     clearCountdown();
     setSubmitDisabled(true);
-    let count = initial || 0;
-    setTimer(count);
+    let count = duration || sliderTime;
 
     intervalRef.current = setInterval(() => {
       count -= 1;
-      setTimer(count >= 0 ? count : 0);
+      socket.emit("timerUpdate", { roomId, remainingTime: count });
 
       if (count <= 0) {
         clearCountdown();
         setSubmitDisabled(false);
+        socket.emit("pollEnded", roomId);
       }
     }, 1000);
   };
 
-  // ------------------ Form Handlers ------------------
+  // ---------------- Form Handlers ----------------
   const handleOptionChange = (id, newText) => {
     setFormData((prev) => ({
       ...prev,
@@ -114,13 +126,11 @@ export default function Teacher() {
     }));
   };
 
-  const handleQuestionTextChange = (newText) => {
+  const handleQuestionTextChange = (newText) =>
     setFormData((prev) => ({ ...prev, questionText: newText }));
-  };
 
-  const handleOptionSelect = (index) => {
+  const handleOptionSelect = (index) =>
     setFormData((prev) => ({ ...prev, correctId: prev.options[index].id }));
-  };
 
   const validateForm = () => {
     if (!formData.questionText.trim()) return "Question text is required";
@@ -134,13 +144,15 @@ export default function Teacher() {
     if (err) return alert(err);
 
     const payload = {
+      roomId,
       formData: {
         ...formData,
         timer: sliderTime,
         options: formData.options.map((o) => ({ ...o, optionVotes: 0 })),
         totalVotes: 0,
+        remainingTime: sliderTime,
+        status: "active",
       },
-      roomId,
     };
 
     socket.emit("uploadQuestion", payload);
@@ -149,21 +161,23 @@ export default function Teacher() {
   };
 
   const handleClearForm = () => {
-    setFormData({
+    setFormData((prev) => ({
+      ...prev,
       questionText: "",
-      options: formData.options.map((o) => ({ ...o, optionText: "" })),
+      options: prev.options.map((o) => ({ ...o, optionText: "" })),
       correctId: -1,
-      totalVotes: 0,
-      timer: 0,
-    });
+    }));
+    setSubmitDisabled(false);
   };
 
   const copyRoomCode = () => {
-    navigator.clipboard.writeText(roomId).then(() => alert("Room code copied: " + roomId));
+    navigator.clipboard.writeText(roomId);
+    alert("Room code copied: " + roomId);
   };
 
-  // ------------------ Render ------------------
-  return (
+  // ---------------- Render ----------------
+  return (<>
+    <Navbar/>
     <div className="flex flex-col lg:flex-row justify-evenly items-start m-10">
       {/* Question Form */}
       <div className="w-full lg:w-[50%] p-5">
@@ -172,7 +186,12 @@ export default function Teacher() {
         <div className="flex items-center gap-2 mb-4 justify-center">
           <span>Room:</span>
           <span className="px-3 py-1 bg-gray-200 rounded">{roomId}</span>
-          <button onClick={copyRoomCode} className="px-3 py-1 bg-blue-500 text-white rounded">Copy</button>
+          <button
+            onClick={copyRoomCode}
+            className="px-3 py-1 bg-blue-500 text-white rounded"
+          >
+            Copy
+          </button>
         </div>
 
         <input
@@ -238,20 +257,31 @@ export default function Teacher() {
         <div className="grid grid-cols-2 gap-4 text-center">
           <div className="p-4 bg-white rounded shadow">
             <p>Timer</p>
-            <p className="text-xl font-bold">{timer}</p>
+            <p className="text-xl font-bold">{newQuestion.remainingTime}</p>
           </div>
           <div className="p-4 bg-white rounded shadow">
             <p>Participated</p>
-            <p className="text-xl font-bold">{newQuestion.totalVotes}</p>
-          </div>
-          <div className="p-4 bg-white rounded shadow">
-            <p>Passed</p>
             <p className="text-xl font-bold">{newQuestion.correctId > -1 ? newQuestion.options[newQuestion.correctId - 1]?.optionVotes || 0 : 0}</p>
+
           </div>
           <div className="p-4 bg-white rounded shadow">
-            <p>Failed</p>
-            <p className="text-xl font-bold">{newQuestion.correctId > -1 ? newQuestion.totalVotes - (newQuestion.options[newQuestion.correctId - 1]?.optionVotes || 0) : 0}</p>
-          </div>
+  <p>Passed</p>
+  <p className="text-xl font-bold">
+    {newQuestion.correctId > -1
+      ? newQuestion.options.find(o => o.id === newQuestion.correctId)?.optionVotes || 0
+      : 0}
+  </p>
+</div>
+<div className="p-4 bg-white rounded shadow">
+  <p>Failed</p>
+  <p className="text-xl font-bold">
+    {newQuestion.correctId > -1
+      ? newQuestion.totalVotes -
+        (newQuestion.options.find(o => o.id === newQuestion.correctId)?.optionVotes || 0)
+      : 0}
+  </p>
+</div>
+
         </div>
 
         <h3 className="text-xl font-bold mt-6 mb-2 text-center">Question Stats</h3>
@@ -269,5 +299,5 @@ export default function Teacher() {
         </div>
       </div>
     </div>
-  );
+  </>);
 }

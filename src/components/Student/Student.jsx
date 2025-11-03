@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useRef } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { useStore } from "../../store/zustand";
 import { useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
@@ -6,129 +6,139 @@ import Navbar from "../Nav/Navbar";
 
 const URL = process.env.NODE_ENV === "production" ? undefined : "http://localhost:3000";
 
-const Student = () => {
+export default function Student() {
   const navigate = useNavigate();
-  const { roomId } = useParams(); // match teacher URL exactly
+  const { roomId } = useParams();
   const { user } = useStore();
-
-  const socket = useMemo(() => io(URL), []);
 
   const [question, setQuestion] = useState(null);
   const [selectedOption, setSelectedOption] = useState(null);
+  const [hasAnswered, setHasAnswered] = useState(false);
   const [isSelectionLocked, setIsSelectionLocked] = useState(false);
   const [isTeacherPresent, setIsTeacherPresent] = useState(true);
   const [timeLeft, setTimeLeft] = useState(0);
 
-  const timerRef = useRef(null);
+  const socketRef = useRef(null);
+  if (!socketRef.current) {
+    socketRef.current = io(URL);
+  }
+  const socket = socketRef.current;
 
-  // ---------------- Navigation guard ----------------
+  // Navigation guard
   useEffect(() => {
-    if (!user) navigate("/");
+    if (!user) return navigate("/");
     if (user === "teacher") navigate(`/teacher/${roomId}`);
   }, [user, navigate, roomId]);
 
-  // ---------------- Socket setup ----------------
+  // Handle incoming new question
+  const handleNewQuestion = (data) => {
+    setQuestion(data);
+    setTimeLeft(data.remainingTime ?? 0);
+
+    // Reset for a new question
+    setSelectedOption(null);
+    setHasAnswered(false);
+    setIsSelectionLocked(false);
+  };
+
+  // Handle poll results
+  const handlePollResults = (data) => {
+    setQuestion({
+      questionText: data.questionText,
+      options: data.options,
+      totalVotes: data.totalParticipants,
+      correctId: data.correctOption?.id ?? -1,
+      status: "ended",
+    });
+    setTimeLeft(0);
+    setIsSelectionLocked(true);
+
+    // If student answered, keep their selection visible
+    if (hasAnswered && selectedOption) {
+      setIsSelectionLocked(true);
+    }
+  };
+
+  // Handle timer updates
+  const handleTimerUpdate = ({ remainingTime }) => {
+    setTimeLeft(remainingTime);
+    if (remainingTime <= 0) setIsSelectionLocked(true);
+  };
+
+  // Socket setup
   useEffect(() => {
     socket.on("connect", () => {
-      console.log("Student connected:", socket.id);
       socket.emit("joinRoom", roomId, "student");
     });
 
-    socket.on("newQuestion", (data) => {
-      clearInterval(timerRef.current);
-      setQuestion(data);
-      setSelectedOption(null);
-      setIsSelectionLocked(false);
-      setTimeLeft(data.timer || 20);
-
-      // Start countdown
-      timerRef.current = setInterval(() => {
-        setTimeLeft((prev) => {
-          if (prev <= 1) {
-            clearInterval(timerRef.current);
-            setIsSelectionLocked(true);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    });
-
-    socket.on("updateQuestion", (data) => setQuestion(data));
-
-    socket.on("pollEnded", () => {
-      clearInterval(timerRef.current);
-      setIsSelectionLocked(true);
-    });
-
+    socket.on("newQuestion", handleNewQuestion);
+    socket.on("pollResults", handlePollResults);
+    socket.on("timerUpdate", handleTimerUpdate);
+    socket.on("updateQuestion", setQuestion);
+    socket.on("pollEnded", () => setIsSelectionLocked(true));
     socket.on("teacherLeft", () => {
       setIsTeacherPresent(false);
       setQuestion(null);
     });
-   
+
     return () => {
-      clearInterval(timerRef.current);
-      socket.disconnect();
+      socket.off("connect");
+      socket.off("newQuestion", handleNewQuestion);
+      socket.off("pollResults", handlePollResults);
+      socket.off("timerUpdate", handleTimerUpdate);
+      socket.off("updateQuestion", setQuestion);
+      socket.off("pollEnded");
+      socket.off("teacherLeft");
     };
-  }, [roomId, socket]);
+  }, [roomId]);
 
-  // ---------------- Option click handler ----------------
+  // Handle option selection
   const handleOptionClick = (optionId) => {
-    if (!isSelectionLocked && question) {
-      setSelectedOption(optionId);
-      setIsSelectionLocked(true);
+  // Only allow click if timeLeft > 0, student hasn't answered, and question exists
+  if (timeLeft > 0 && !hasAnswered && question) {
+    setSelectedOption(optionId);
+    setIsSelectionLocked(true);
+    setHasAnswered(true);
+    socket.emit("submit", { choosedAns: optionId, roomId });
+  }
+};
 
-      socket.emit("submit", {
-        choosedAns: optionId,
-        roomId,
-      });
-    }
-  };
 
-  // ---------------- Render ----------------
-  if (!isTeacherPresent) {
+  // UI if teacher left
+  if (!isTeacherPresent)
     return (
       <>
         <Navbar />
-        <div className="mt-20 flex justify-center items-center">
-          <h1 className="text-4xl font-bold">Teacher Left</h1>
-        </div>
+        <div className="mt-20 text-center text-4xl font-bold">Teacher Left</div>
       </>
     );
-  }
 
-  if (!question) {
+  // UI while waiting for question
+  if (!question)
     return (
       <>
         <Navbar />
-        <div className="mt-20 flex justify-center items-center">
-          <h1 className="text-4xl font-bold">
-            Waiting for teacher to ask a question...
-          </h1>
+        <div className="mt-20 text-center text-4xl font-bold">
+          Waiting for teacher to ask a question...
         </div>
       </>
     );
-  }
 
+  // Main UI
   return (
     <>
       <Navbar />
-      <div className="mt-20 flex flex-col items-center justify-center px-4">
-        {/* Question */}
-        <h1 className="text-4xl font-bold mb-8 text-center">
-          {question.questionText}
-        </h1>
-
-        {/* Timer */}
+      <div className="mt-20 flex flex-col items-center px-4">
+        <h1 className="text-4xl font-bold mb-8 text-center">{question.questionText}</h1>
         <div className="mb-6 text-xl font-semibold">Time Left: {timeLeft} sec</div>
 
-        {/* Options */}
         <div className="grid gap-4 w-full max-w-md">
           {question.options.map((option) => {
             let bgClass = "bg-blue-500";
-            if (selectedOption !== null) {
+            if (selectedOption !== null || question.status === "ended") {
               if (option.id === question.correctId) bgClass = "bg-green-800";
-              else if (option.id === selectedOption) bgClass = "bg-red-600";
+              else if (option.id === selectedOption && selectedOption !== question.correctId)
+                bgClass = "bg-red-600";
             }
 
             const percent =
@@ -139,28 +149,23 @@ const Student = () => {
             return (
               <button
                 key={option.id}
-                className={`w-full px-6 py-4 rounded-lg font-bold text-xl text-white cursor-pointer transition duration-300 ${bgClass}`}
+                className={`w-full px-6 py-4 rounded-lg text-xl text-white font-bold ${bgClass}`}
                 onClick={() => handleOptionClick(option.id)}
                 disabled={isSelectionLocked}
               >
                 <div className="flex justify-between items-center">
                   <span>{option.optionText}</span>
-                  {selectedOption !== null && <span>{percent}%</span>}
+                  {(selectedOption !== null || question.status === "ended") && <span>{percent}%</span>}
                 </div>
               </button>
             );
           })}
         </div>
 
-        {/* Total votes */}
         {selectedOption !== null && (
-          <div className="mt-6 text-lg font-medium">
-            Total Participants: {question.totalVotes}
-          </div>
+          <div className="mt-6 text-lg font-medium">Total Participants: {question.totalVotes}</div>
         )}
       </div>
     </>
   );
-};
-
-export default Student;
+}
