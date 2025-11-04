@@ -4,7 +4,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import Navbar from "../Nav/Navbar";
 
-const URL = process.env.NODE_ENV === "production" ? undefined : "http://localhost:3000";
+// const URL = process.env.NODE_ENV === "production" ? undefined : "http://localhost:3000";
+const URL = "https://polling-backend-1nih.onrender.com"
 
 export default function Student() {
   const navigate = useNavigate();
@@ -20,7 +21,10 @@ export default function Student() {
 
   const socketRef = useRef(null);
   if (!socketRef.current) {
-    socketRef.current = io(URL);
+    socketRef.current = io(URL,{
+  transports: ["websocket"],
+  withCredentials: true,
+});
   }
   const socket = socketRef.current;
 

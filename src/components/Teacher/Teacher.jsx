@@ -5,7 +5,10 @@ import { useNavigate } from "react-router-dom";
 import { useStore } from "../../store/zustand";
 import Navbar from "../Nav/Navbar";
 
-const URL = process.env.NODE_ENV === "production" ? undefined : "http://localhost:3000";
+
+// const URL = process.env.NODE_ENV === "production" ? undefined : "http://localhost:3000";
+const URL = "https://polling-backend-1nih.onrender.com"
+
 
 export default function Teacher() {
   const { name, user } = useStore();
@@ -16,8 +19,11 @@ export default function Teacher() {
     return cleaned.length ? `${cleaned}_room` : `room_${Math.random().toString(36).slice(2, 8)}`;
   }, [name]);
 
-  const socket = useMemo(() => io(URL), []);
-
+  const socket = useMemo(() => io(URL), {
+  transports: ["websocket"],
+  withCredentials: true,
+});
+  console.log(URL);
   const [sliderTime, setSliderTime] = useState(20);
   const [submitDisabled, setSubmitDisabled] = useState(false);
   const intervalRef = useRef(null);
@@ -74,6 +80,9 @@ export default function Teacher() {
   setTimer(0);
 });
 
+  socket.on("connect_error", (err) => {
+  console.error("Socket connection error:", err.message);
+});
 
     socket.on("pollEnded", () => {
       clearCountdown();
